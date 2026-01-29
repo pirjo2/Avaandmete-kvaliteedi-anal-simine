@@ -1,0 +1,414 @@
+meta:
+  name: Vetrò et al. (2016) Open Data Quality Measurement Framework
+  file_purpose: Machine-readable definition of Vetrò metrics (structured expression
+    trees) for automated scoring.
+  notes:
+  - All expressions are represented as operator trees (Option B).
+  - Symbol 's' is reserved for Source presence (0/1). Symbol 'sc' is used for Scale
+    in accuracy_in_aggregation to avoid collision.
+  - Some portal/metadata-derived inputs may be provided manually or inferred via LLM
+    prompts in the runner script.
+vetro_methodology:
+  traceability:
+    track_of_creation:
+      description: Indicates the presence or absence of metadata associated with the
+        process of creation of a dataset.
+      inputs:
+      - source: s
+      - date_of_creation: dc
+      formula:
+        assign: tc
+        expression:
+          operator: add
+          left:
+            operator: multiply
+            left: 2
+            right: s
+          right: dc
+      normalization:
+        assign: tcn
+        expression:
+          operator: divide
+          left: tc
+          right: 3
+    track_of_updates:
+      description: Indicates the existence or absence of metadata associated with
+        the updates done to a dataset.
+      inputs:
+      - list_of_updates: lu
+      - dates_of_updates: du
+      formula:
+        assign: tu
+        expression:
+          operator: add
+          left: lu
+          right: du
+      normalization:
+        assign: tun
+        expression:
+          operator: divide
+          left: tu
+          right: 2
+  currentness:
+    percentage_of_current_rows:
+      description: Indicates the percentage of rows of a dataset that have current
+        values, it means that they don’t have any value that refers to a previous
+        or a following period of time.
+      inputs:
+      - number_of_not_current_rows: ncr
+      - number_of_rows: nr
+      formula:
+        assign: pcr
+        expression:
+          operator: multiply
+          left:
+            operator: subtract
+            left: 1
+            right:
+              operator: divide
+              left: ncr
+              right: nr
+          right: 100
+      normalization:
+        assign: pcrn
+        expression:
+          operator: divide
+          left: pcr
+          right: 100
+    delay_in_publication:
+      description: Indicates the ratio between the delay in the publication (number
+        of days passed between the moment in which the information is available and
+        the publication of the dataset) and the period of time referred by the dataset
+        (week, month, year).
+      inputs:
+      - end_date_of_period: edp
+      - date_of_publication: dp
+      - start_date_of_period: sd
+      intermediate_calculation:
+      - assign: da
+        expression:
+          operator: add
+          left: edp
+          right: 1
+      formula:
+        assign: dip
+        expression:
+          operator: subtract
+          left: 1
+          right:
+            operator: divide
+            left:
+              operator: subtract
+              left: dp
+              right: da
+            right:
+              operator: subtract
+              left: edp
+              right: sd
+      normalization:
+        assign: dipn
+        expression:
+          operator: identity
+          operand: dip
+    delay_after_expiration:
+      description: Indicates the ratio between the delay in the publication of a dataset
+        after the expiration of its previous version and the period of time referred
+        by the dataset (week, month, year).
+      inputs:
+      - expiration_date: ed
+      - current_date: cd
+      - start_date_of_period: sd
+      - end_date_of_period: edp
+      formula:
+        assign: dae
+        expression:
+          operator: subtract
+          left: 1
+          right:
+            operator: divide
+            left:
+              operator: subtract
+              left: cd
+              right: ed
+            right:
+              operator: subtract
+              left: edp
+              right: sd
+      normalization:
+        assign: daen
+        expression:
+          operator: conditional
+          conditions:
+          - if: dae <= 0
+            then: 0
+          - elif: dae <= 1
+            then: dae
+          - else: 1
+  completeness:
+    percentage_of_complete_cells:
+      description: Indicates the percentage of complete cells in a dataset. It means
+        the cells that are not empty and have a meaningful value assigned (i.e. a
+        value coherent with the domain of the column).
+      inputs:
+      - number_of_rows: nr
+      - number_of_columns: nc
+      - number_of_incomplete_cells: ic
+      intermediate_calculation:
+        assign: ncl
+        expression:
+          operator: multiply
+          left: nr
+          right: nc
+      formula:
+        assign: pcc
+        expression:
+          operator: multiply
+          left:
+            operator: subtract
+            left: 1
+            right:
+              operator: divide
+              left: ic
+              right: ncl
+          right: 100
+      normalization:
+        assign: pccn
+        expression:
+          operator: divide
+          left: pcc
+          right: 100
+    percentage_of_complete_rows:
+      description: Indicates the percentage of complete rows in a dataset. It means
+        the rows that don’t have any incomplete cell.
+      inputs:
+      - number_of_rows: nr
+      - number_of_incomplete_rows: nir
+      formula:
+        assign: pcpr
+        expression:
+          operator: multiply
+          left:
+            operator: subtract
+            left: 1
+            right:
+              operator: divide
+              left: nir
+              right: nr
+          right: 100
+      normalization:
+        assign: pcprn
+        expression:
+          operator: divide
+          left: pcpr
+          right: 100
+  compliance:
+    percentage_of_standardized_columns:
+      description: Indicates the percentage of standardized columns in a dataset.
+        It just considers the columns that represent some kind of information that
+        has standards associated with it (i.e. geographic information).
+      inputs:
+      - number_of_columns_with_standards: ns
+      - number_of_standardized_columns: nsc
+      formula:
+        assign: psc
+        expression:
+          operator: multiply
+          left:
+            operator: divide
+            left: nsc
+            right: ns
+          right: 100
+      normalization:
+        assign: pscn
+        expression:
+          operator: divide
+          left: psc
+          right: 100
+      errata:
+        note: The original Vetrò et al. (2016) table shows the ratio as ns/nsc, which
+          can exceed 100% given the variable definitions. This YAML uses nsc/ns to
+          match 'percentage of standardized columns' and keep results within [0,100].
+        original_formula_as_printed: psc = (ns / nsc) * 100
+        formula_used_here: psc = (nsc / ns) * 100
+    egms_compliance:
+      description: Indicates the degree to which a dataset follows the e-GMS standard
+        (as far as the basic elements are concerned, it essentially boils down to
+        a specification of which Dublin Core metadata should be supplied).
+      inputs:
+      - category: c
+      - title: t
+      - description: d
+      - identifier: id
+      - publisher: pb
+      - coverage: cv
+      - language: l
+      - source: s
+      - date_of_creation: dc
+      formula:
+        assign: egmsc
+        expression:
+          operator: add
+          terms:
+          - s
+          - dc
+          - c
+          - t
+          - operator: multiply
+            left: 0.2
+            right:
+              operator: add
+              terms:
+              - d
+              - id
+              - pb
+              - cv
+              - l
+      normalization:
+        assign: egmscn
+        expression:
+          operator: divide
+          left: egmsc
+          right: 5
+    five_stars_open_data:
+      description: Indicates the level of the 5 Star Open Data model in which the
+        dataset is and the advantage offered by this reason.
+      inputs:
+      - available_on_web: s1
+      - structured_format: s2
+      - open_format: s3
+      - use_of_uris: s4
+      - linked_open_data: s5
+      formula:
+        assign: fsod
+        expression:
+          operator: add
+          terms:
+          - s1
+          - s2
+          - s3
+          - s4
+          - s5
+      normalization:
+        assign: fsodn
+        expression:
+          operator: divide
+          left: fsod
+          right: 5
+  understandability:
+    percentage_of_columns_with_metadata:
+      description: Indicates the percentage of columns in a dataset that have associated
+        descriptive metadata. This metadata is important because it allows to easily
+        understanding the information of the data and the way it is represented.
+      inputs:
+      - number_of_columns_with_metadata: ncm
+      - number_of_columns: nc
+      formula:
+        assign: pcm
+        expression:
+          operator: multiply
+          left:
+            operator: divide
+            left: ncm
+            right: nc
+          right: 100
+      normalization:
+        assign: pcmn
+        expression:
+          operator: divide
+          left: pcm
+          right: 100
+    percentage_of_columns_in_comprehensible_format:
+      description: Indicates the percentage of columns in a dataset that are represented
+        in a format that can be easily understood by the users and it is also machinereadable.
+      inputs:
+      - number_of_columns_in_understandable_format: ncuf
+      - number_of_columns: nc
+      formula:
+        assign: pcuf
+        expression:
+          operator: multiply
+          left:
+            operator: divide
+            left: ncuf
+            right: nc
+          right: 100
+      normalization:
+        assign: pcufn
+        expression:
+          operator: divide
+          left: pcuf
+          right: 100
+  accuracy:
+    percentage_of_syntactically_accurate_cells:
+      description: Indicates the percentage cells in a dataset that have correct values
+        according to the domain and the type of information of the dataset.
+      inputs:
+      - number_of_cells_with_errors: nce
+      - number_of_cells: ncl
+      formula:
+        assign: pac
+        expression:
+          operator: multiply
+          left:
+            operator: subtract
+            left: 1
+            right:
+              operator: divide
+              left: nce
+              right: ncl
+          right: 100
+      normalization:
+        assign: pacn
+        expression:
+          operator: divide
+          left: pac
+          right: 100
+    accuracy_in_aggregation:
+      description: Indicates the ratio between the error in aggregation and the scale
+        of data representation. This metric only applies for the datasets that have
+        aggregation columns or when there are two or more datasets referring to the
+        same information but in a different granularity level.
+      inputs:
+      - scale: sc
+      - own_aggregation_value: oav
+      - dataset_aggregation_value: dav
+      intermediate_calculation:
+        assign: e
+        expression:
+          operator: sum
+          of:
+            operator: abs_diff
+            left: dav_i
+            right: oav_i
+      formula:
+        assign: ea
+        expression:
+          operator: subtract
+          left: 1
+          right:
+            operator: divide
+            left: e
+            right: sc
+      normalization:
+        assign: ean
+        expression:
+          operator: conditional
+          conditions:
+          - if: ea <= 0
+            then: 0
+          - elif: ea <= 0.9
+            then:
+              operator: multiply
+              left: 0.25
+              right: ea
+          - elif: ea <= 0.95
+            then:
+              operator: multiply
+              left: 0.5
+              right: ea
+          - elif: ea <= 0.999
+            then:
+              operator: multiply
+              left: 0.75
+              right: ea
+          - else: ea

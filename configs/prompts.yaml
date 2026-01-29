@@ -1,0 +1,146 @@
+meta:
+  name: Vetrò symbol prompting pack
+  version: '1.0'
+  notes:
+  - Prompts are used only for symbols that cannot be reliably derived from the data
+    file.
+  - 'Notebook will format prompts with placeholders: {dataset_description}, {columns},
+    {profile}, {N}.'
+  - 'Expected outputs: binary -> 0/1, count -> integer, date -> YYYY-MM-DD (not a
+    datetime).'
+symbols:
+  s:
+    type: binary
+    prompt: "Task: Open data metadata check (Vetrò-style).\nQuestion: Is the DATA\
+      \ SOURCE explicitly stated (publisher organisation/system or source system)?\n\
+      Use only the provided context below.\nOutput format:\n  answer: 1 or 0\n  evidence:\
+      \ short quote or phrase from the context (or 'none')\n"
+  dc:
+    type: binary
+    prompt: "Task: Open data metadata check (Vetrò-style).\nQuestion: Is a DATE OF\
+      \ CREATION / ISSUED DATE explicitly present in the metadata/description?\n(This\
+      \ is a presence/absence check, not the date value itself.)\nOutput format:\n\
+      \  answer: 1 or 0\n  evidence: short quote or phrase (or 'none')\n"
+  lu:
+    type: binary
+    prompt: "Task: Open data metadata check (Vetrò-style).\nQuestion: Is a LIST/LOG\
+      \ of updates or version history mentioned (e.g., changelog, versions list)?\n\
+      Output format:\n  answer: 1 or 0\n  evidence: short quote or phrase (or 'none')\n"
+  du:
+    type: binary
+    prompt: "Task: Open data metadata check (Vetrò-style).\nQuestion: Are update DATES\
+      \ mentioned (e.g., 'last updated 2025-10-25', dated versions, update timestamps)?\n\
+      Output format:\n  answer: 1 or 0\n  evidence: short quote or phrase (or 'none')\n"
+  dp:
+    type: date
+    prompt: "Task: Metadata extraction.\nQuestion: What is the dataset PUBLICATION\
+      \ DATE or LAST UPDATED date?\nReturn a single date in YYYY-MM-DD.\nIf multiple\
+      \ dates exist, pick the most recent 'published/updated/modified' date.\nOutput\
+      \ format:\n  answer: YYYY-MM-DD or UNKNOWN\n  evidence: short quote or phrase\
+      \ (or 'none')\n"
+  sd:
+    type: date
+    prompt: "Task: Metadata extraction.\nQuestion: What is the START date of the period\
+      \ of time referred by the dataset?\nReturn a single date in YYYY-MM-DD.\nOutput\
+      \ format:\n  answer: YYYY-MM-DD or UNKNOWN\n  evidence: short quote or phrase\
+      \ (or 'none')\n"
+  edp:
+    type: date
+    prompt: "Task: Metadata extraction.\nQuestion: What is the END date of the period\
+      \ of time referred by the dataset?\nReturn a single date in YYYY-MM-DD.\nOutput\
+      \ format:\n  answer: YYYY-MM-DD or UNKNOWN\n  evidence: short quote or phrase\
+      \ (or 'none')\n"
+  ed:
+    type: date
+    prompt: "Task: Metadata extraction.\nQuestion: What is the EXPIRATION date of\
+      \ the previous dataset version (or the date when the previous version became\
+      \ outdated)?\nReturn a single date in YYYY-MM-DD.\nOutput format:\n  answer:\
+      \ YYYY-MM-DD or UNKNOWN\n  evidence: short quote or phrase (or 'none')\n"
+  c:
+    type: binary
+    prompt: "Task: eGMS / Dublin Core field presence (Vetrò-style).\nField: Category\
+      \ / Subject / Theme.\nQuestion: Is CATEGORY (theme/subject) present in metadata?\n\
+      Output format:\n  answer: 1 or 0\n  evidence: short quote or phrase (or 'none')\n"
+  t:
+    type: binary
+    prompt: "Task: eGMS / Dublin Core field presence (Vetrò-style).\nField: Title.\n\
+      Question: Is TITLE present in metadata?\nOutput format:\n  answer: 1 or 0\n\
+      \  evidence: short quote or phrase (or 'none')\n"
+  d:
+    type: binary
+    prompt: "Task: eGMS / Dublin Core field presence (Vetrò-style).\nField: Description.\n\
+      Question: Is DESCRIPTION present in metadata (a human-readable dataset description)?\n\
+      Output format:\n  answer: 1 or 0\n  evidence: short quote or phrase (or 'none')\n"
+  id:
+    type: binary
+    prompt: "Task: eGMS / Dublin Core field presence (Vetrò-style).\nField: Identifier.\n\
+      Question: Is an IDENTIFIER present (dataset id/uuid/uri/permalink in metadata)?\n\
+      Output format:\n  answer: 1 or 0\n  evidence: short quote or phrase (or 'none')\n"
+  pb:
+    type: binary
+    prompt: "Task: eGMS / Dublin Core field presence (Vetrò-style).\nField: Publisher.\n\
+      Question: Is PUBLISHER present (publishing organisation) in metadata?\nOutput\
+      \ format:\n  answer: 1 or 0\n  evidence: short quote or phrase (or 'none')\n"
+  cv:
+    type: binary
+    prompt: "Task: eGMS / Dublin Core field presence (Vetrò-style).\nField: Coverage.\n\
+      Question: Is COVERAGE present (geographic and/or temporal coverage stated in\
+      \ metadata)?\nOutput format:\n  answer: 1 or 0\n  evidence: short quote or phrase\
+      \ (or 'none')\n"
+  l:
+    type: binary
+    prompt: "Task: eGMS / Dublin Core field presence (Vetrò-style).\nField: Language.\n\
+      Question: Is LANGUAGE present in metadata?\nOutput format:\n  answer: 1 or 0\n\
+      \  evidence: short quote or phrase (or 'none')\n"
+  s1:
+    type: binary
+    prompt: "Task: 5-star open data check.\nCriterion (1-star): Data is on the web\
+      \ under an open license.\nOutput format:\n  answer: 1 or 0\n  evidence: short\
+      \ phrase (or 'none')\n"
+  s2:
+    type: binary
+    prompt: "Task: 5-star open data check.\nCriterion (2-star): Data is structured\
+      \ and machine-readable.\nOutput format:\n  answer: 1 or 0\n  evidence: short\
+      \ phrase (or 'none')\n"
+  s3:
+    type: binary
+    prompt: "Task: 5-star open data check.\nCriterion (3-star): Data is in a non-proprietary\
+      \ open format (CSV/JSON/XML).\nOutput format:\n  answer: 1 or 0\n  evidence:\
+      \ short phrase (or 'none')\n"
+  s4:
+    type: binary
+    prompt: "Task: 5-star open data check.\nCriterion (4-star): Uses URIs/identifiers\
+      \ so things can be referenced.\nOutput format:\n  answer: 1 or 0\n  evidence:\
+      \ short phrase (or 'none')\n"
+  s5:
+    type: binary
+    prompt: "Task: 5-star open data check.\nCriterion (5-star): Links to other datasets\
+      \ (Linked Open Data).\nOutput format:\n  answer: 1 or 0\n  evidence: short phrase\
+      \ (or 'none')\n"
+  ncm:
+    type: count_0_to_N
+    prompt: "Task: Column documentation coverage (Vetrò-style).\nQuestion: How many\
+      \ columns have explicit per-column metadata/definitions (e.g., data dictionary,\
+      \ portal explains each field)?\nUse the provided context: description + columns\
+      \ + profile.\nOutput format:\n  answer: integer from 0 to N\n  evidence: short\
+      \ justification (or 'none')\n"
+  ncuf:
+    type: count_0_to_N
+    prompt: "Task: Column comprehensible format count (Vetrò-style).\nQuestion: How\
+      \ many columns are in a comprehensible user-friendly format (clear meaning,\
+      \ readable values/units; not cryptic codes only)?\nOutput format:\n  answer:\
+      \ integer from 0 to N\n  evidence: short justification (or 'none')\n"
+  ns:
+    type: count_0_to_N
+    prompt: "Task: Standards applicability count (Vetrò-style).\nDefinition: ns =\
+      \ number of columns with associated standards (where a recognized standard could\
+      \ apply: ISO dates, ISO country codes, official region codes, classifications).\n\
+      Question: Estimate ns from the context.\nOutput format:\n  answer: integer from\
+      \ 0 to N\n  evidence: list a few example columns (or 'none')\n"
+  nsc:
+    type: count_0_to_N
+    prompt: "Task: Standardized columns count (Vetrò-style).\nDefinition: nsc = number\
+      \ of columns that actually follow the associated standard consistently.\nQuestion:\
+      \ Estimate nsc from the context (consider column values in the profile if available).\n\
+      Output format:\n  answer: integer from 0 to N\n  evidence: list a few example\
+      \ columns (or 'none')\n"
