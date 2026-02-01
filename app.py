@@ -51,7 +51,7 @@ if uploaded is not None:
 
     st.subheader("Preview")
     st.write(f"Rows: {len(df):,} | Columns: {len(df.columns)}")
-    st.dataframe(df.head(50), use_container_width=True)
+    st.dataframe(df, width="stretch")
 
     if run_btn:
         with st.spinner("Computing metrics..."):

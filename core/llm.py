@@ -52,7 +52,7 @@ def infer_symbol(
         truncation=True,
         max_new_tokens=12,
         do_sample=False,
-        temperature=0.0,
+        #temperature=0.0,
     )
 
     # Extract generated text
@@ -72,6 +72,9 @@ def infer_symbol(
 
     num = extract_first_number(generated_text)
     if num is None:
+        # fall back to 0 so formulas can still run
+        if typ in ("binary", "count_0_to_N"):
+            return 0.0, generated_text
         return None, generated_text
 
     val = float(num)
