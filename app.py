@@ -1,94 +1,128 @@
-import streamlit as st
+import io
+import yaml
 import pandas as pd
+import streamlit as st
 import plotly.express as px
 
 from core.pipeline import run_quality_assessment
 
-st.set_page_config(page_title="Open Data Quality (Vetrò + AI)", layout="wide")
-st.title("Open Data Quality Assessment (Vetrò 2016 + YAML + optional AI)")
+st.set_page_config(page_title="Open data quality (Vetrò + LLM)", layout="wide")
 
-with st.expander("How this works", expanded=False):
-    st.markdown(
-        """
-Upload an open data file (CSV or Excel).  
-The app computes dataset-level quality metrics using a YAML-driven implementation of the Vetrò et al. (2016) framework.  
-Optionally, you can enable an LLM (Hugging Face) to estimate metadata-related inputs from the dataset context (column names, samples, and description).
-"""
-    )
+st.title("Open data quality assessment (Vetrò + AI)")
 
-col1, col2, col3 = st.columns([2, 1, 1])
+st.markdown(
+    "Upload a dataset (CSV/XLSX). The app computes Vetrò-style dataset-level quality metrics. "
+    "Optional: enable LLM-based inference for metadata-like symbols."
+)
 
-with col1:
-    uploaded = st.file_uploader("Upload dataset (CSV / XLSX)", type=["csv", "xlsx", "xls"])
-    description = st.text_area("Optional: dataset description / notes (used for LLM prompts)", height=100, placeholder="Paste portal description here (optional).")
-with col2:
-    use_llm = st.toggle("Use Hugging Face LLM", value=False)
-    hf_model = st.text_input("HF model name", value="google/flan-t5-base", help="Example: google/flan-t5-base")
-with col3:
-    max_rows = st.number_input("Max rows to process (0 = all)", min_value=0, value=0, step=10000)
-    run_btn = st.button("Run assessment", type="primary", use_container_width=True)
-
+# Paths inside the repo
 FORMULAS = "configs/formulas.yaml"
 PROMPTS = "configs/prompts.yaml"
 
-def read_uploaded(file) -> pd.DataFrame:
+# --- Load formulas YAML once (for labels etc.) ---
+with open(FORMULAS, "r", encoding="utf-8") as f:
+    formulas_cfg = yaml.safe_load(f)
+
+labels_map = formulas_cfg.get("labels", {})  # top-level labels (we add to formulas yaml)
+
+# --- Sidebar controls ---
+st.sidebar.header("Settings")
+
+use_llm = st.sidebar.checkbox("Use Hugging Face LLM", value=False)
+
+MODEL_OPTIONS = [
+    "google/flan-t5-base",
+    "google/flan-t5-large",
+    "google/mt5-small",
+    # You can add more models later
+    # "tiiuae/falcon-7b-instruct",  # example (might be too heavy for CPU)
+]
+hf_model = st.sidebar.selectbox("Hugging Face model", MODEL_OPTIONS, index=0)
+
+max_rows = st.sidebar.number_input("Max rows to load (performance)", min_value=1000, max_value=500000, value=200000, step=1000)
+
+st.sidebar.markdown("---")
+st.sidebar.caption("Tip: Large models are slow on Streamlit Cloud (CPU). Start with flan-t5-base.")
+
+# Optional metadata inputs for LLM context (helps the “human-like guessing”)
+st.subheader("Optional dataset metadata (helps AI)")
+colA, colB, colC = st.columns(3)
+with colA:
+    meta_title = st.text_input("Title", value="")
+with colB:
+    meta_publisher = st.text_input("Publisher", value="")
+with colC:
+    meta_licence = st.text_input("Licence", value="")
+
+meta_description = st.text_area("Description", value="", height=100)
+
+uploaded = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx", "xls"])
+
+def load_df(file) -> pd.DataFrame:
     if file.name.lower().endswith(".csv"):
-        # try encodings
-        for enc in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
+        data = file.getvalue()
+        # Try UTF-8 first, then latin1 fallback (encoding issues are common)
+        for enc in ("utf-8", "utf-8-sig", "latin1"):
             try:
-                return pd.read_csv(file, encoding=enc)
-            except UnicodeDecodeError:
-                file.seek(0)
-                continue
-        file.seek(0)
-        return pd.read_csv(file, encoding_errors="replace")
-    return pd.read_excel(file)
+                return pd.read_csv(io.BytesIO(data), encoding=enc)
+            except Exception:
+                pass
+        # last resort
+        return pd.read_csv(io.BytesIO(data), engine="python")
+    else:
+        return pd.read_excel(file)
 
-if uploaded is not None:
-    df = read_uploaded(uploaded)
-    if max_rows and max_rows > 0:
-        df = df.head(int(max_rows)).copy()
+run_btn = st.button("Run quality assessment", type="primary", disabled=uploaded is None)
 
-    st.subheader("Preview")
-    st.write(f"Rows: {len(df):,} | Columns: {len(df.columns)}")
-    st.dataframe(df, width="stretch")
+if run_btn and uploaded is not None:
+    with st.spinner("Loading dataset..."):
+        df = load_df(uploaded)
+        if len(df) > int(max_rows):
+            df = df.head(int(max_rows)).copy()
 
-    if run_btn:
-        with st.spinner("Computing metrics..."):
-            _, metrics_df, details = run_quality_assessment(
-                df=df,
-                formulas_yaml_path=FORMULAS,
-                prompts_yaml_path=PROMPTS,
-                dataset_description=description or "",
-                use_llm=use_llm,
-                hf_model_name=hf_model,
-            )
+    st.success(f"Loaded dataset with {df.shape[0]} rows and {df.shape[1]} columns.")
+    st.dataframe(df.head(20), width="stretch")
 
-        st.subheader("Metric results")
-        st.dataframe(metrics_df, use_container_width=True)
+    extra_meta = {
+        "title": meta_title.strip(),
+        "description": meta_description.strip(),
+        "publisher": meta_publisher.strip(),
+        "licence": meta_licence.strip(),
+    }
 
-        st.subheader("Bar chart (metric scores)")
-        plot_df = metrics_df.dropna(subset=["value"]).copy()
-        plot_df["metric_full"] = plot_df["dimension"] + "." + plot_df["metric"]
-        plot_df = plot_df.sort_values("value", ascending=False)
-
-        fig = px.bar(plot_df, x="metric_full", y="value")
-        fig.update_layout(xaxis_title="Metric", yaxis_title="Score (normalized)", xaxis_tickangle=-45)
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.subheader("Download")
-        st.download_button(
-            "Download metric table (CSV)",
-            data=metrics_df.to_csv(index=False).encode("utf-8"),
-            file_name="quality_metrics.csv",
-            mime="text/csv",
+    with st.spinner("Computing metrics..."):
+        _, metrics_df, details = run_quality_assessment(
+            df=df,
+            formulas_yaml_path=FORMULAS,
+            prompts_yaml_path=PROMPTS,
+            use_llm=use_llm,
+            hf_model_name=hf_model,
+            extra_metadata=extra_meta,
         )
 
-        with st.expander("Debug info (inputs used)", expanded=False):
-            st.json({
-                "input_symbols": details.get("input_symbols", []),
-                "auto_inputs": details.get("debug", {}).get("auto", {}),
-                "llm_raw": details.get("debug", {}).get("llm_raw", {}),
-            })
-else:
-    st.info("Upload a dataset file to start.")
+    st.subheader("Results (table)")
+    st.dataframe(metrics_df, width="stretch")
+
+    # --- Pretty labels for chart (2) ---
+    # metrics_df has columns: dimension, metric, value, metric_id
+    chart_df = metrics_df.dropna(subset=["value"]).copy()
+    chart_df["label"] = chart_df["metric_id"].map(labels_map).fillna(chart_df["metric_id"])
+    chart_df = chart_df.sort_values("value", ascending=False)
+
+    st.subheader("Quality scores (bar chart)")
+    fig = px.bar(chart_df, x="label", y="value", color="dimension", text="value")
+    fig.update_traces(texttemplate="%{text:.3f}", textposition="outside")
+    fig.update_layout(
+        xaxis_title="Metric",
+        yaxis_title="Score",
+        xaxis_tickangle=-30,
+        margin=dict(t=40, b=140),
+        legend_title_text="Dimension",
+    )
+    st.plotly_chart(fig, width="stretch")
+
+    # --- Debug panels ---
+    with st.expander("Debug: inputs / LLM raw outputs"):
+        st.write("auto_inputs", details.get("auto_inputs", {}))
+        st.write("llm_confidence", details.get("llm_confidence", {}))
+        st.write("llm_raw", details.get("llm_raw", {}))

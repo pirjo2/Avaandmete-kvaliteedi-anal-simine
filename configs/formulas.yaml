@@ -412,3 +412,17 @@ vetro_methodology:
               left: 0.75
               right: ea
           - else: ea
+  labels:
+  completeness.percentage_of_complete_cells: "Complete cells (%)"
+  completeness.percentage_of_complete_rows: "Complete rows (%)"
+  accuracy.percentage_of_syntactically_accurate_cells: "Syntactically valid cells (%)"
+  traceability.track_of_creation: "Creation traceability"
+  traceability.track_of_updates: "Update traceability"
+  currentness.percentage_of_current_rows: "Current rows (%)"
+  currentness.delay_in_publication: "Publication delay"
+  currentness.delay_after_expiration: "Delay after expiration"
+  compliance.five_stars_open_data: "5-star open data"
+  compliance.percentage_of_standardized_columns: "Standardized columns (%)"
+  compliance.egms_compliance: "eGMS compliance"
+  understandability.percentage_of_columns_with_metadata: "Metadata coverage"
+  understandability.percentage_of_columns_in_comprehensible_format: "Comprehensible columns (%)"

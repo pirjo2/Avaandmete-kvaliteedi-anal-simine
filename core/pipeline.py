@@ -1,55 +1,41 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Tuple
+import yaml
 import pandas as pd
 
-from .yaml_loader import load_vetro_yaml, load_prompts_yaml
-from .metrics_eval import build_context, compute_metrics
-from .llm import get_hf_pipe
+from core.llm import get_hf_pipe
+from core.metrics_eval import compute_metrics
 
 def run_quality_assessment(
     df: pd.DataFrame,
     formulas_yaml_path: str,
     prompts_yaml_path: str,
-    dataset_description: str = "",
-    use_llm: bool = False,
-    hf_model_name: str = "google/flan-t5-base",
-) -> Tuple[Dict[str, float], pd.DataFrame, Dict[str, Any]]:
-    vetro_dict, _ = load_vetro_yaml(formulas_yaml_path)
-    prompt_defs, _ = load_prompts_yaml(prompts_yaml_path)
+    use_llm: bool,
+    hf_model_name: str,
+    extra_metadata: Dict[str, str] | None = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+    if extra_metadata is None:
+        extra_metadata = {"title": "", "description": "", "publisher": "", "licence": ""}
 
-    # Collect all symbols referenced by YAML inputs
-    input_symbols = []
-    for dim, metrics in vetro_dict.items():
-        for mname, metric in metrics.items():
-            for inp in metric.get("inputs", []):
-                if isinstance(inp, dict):
-                    # {'some_name': 'symbol'}
-                    for _, sym in inp.items():
-                        input_symbols.append(sym)
-                elif isinstance(inp, str):
-                    input_symbols.append(inp)
-    input_symbols = sorted(set(input_symbols))
+    with open(formulas_yaml_path, "r", encoding="utf-8") as f:
+        formulas_cfg = yaml.safe_load(f)
 
-    context = build_context(df, description=dataset_description)
+    with open(prompts_yaml_path, "r", encoding="utf-8") as f:
+        prompt_cfg = yaml.safe_load(f)
 
     hf_pipe = None
     if use_llm:
         hf_pipe = get_hf_pipe(hf_model_name)
 
-    results, env, debug = compute_metrics(
+    metrics_df, details = compute_metrics(
         df=df,
-        vetro_dict=vetro_dict,
-        context=context,
-        input_symbols=input_symbols,
-        prompt_defs=prompt_defs,
+        formulas_cfg=formulas_cfg,
+        prompt_cfg=prompt_cfg,
+        use_llm=use_llm,
         hf_pipe=hf_pipe,
+        extra_metadata=extra_metadata,
     )
 
-    rows = []
-    for k, v in results.items():
-        dim, metric = k.split(".", 1)
-        rows.append({"dimension": dim, "metric": metric, "value": v})
-    metrics_df = pd.DataFrame(rows).sort_values(["dimension", "metric"]).reset_index(drop=True)
-
-    return results, metrics_df, {"env": env, "debug": debug, "input_symbols": input_symbols}
+    # For compatibility with earlier code return signature
+    return df, metrics_df, details
