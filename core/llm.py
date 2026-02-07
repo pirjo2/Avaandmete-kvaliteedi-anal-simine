@@ -8,52 +8,61 @@ import json
 DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
-# numeric-only reply (prevents "AgeGroup1" -> 1 errors)
-NUM_ONLY_RE = re.compile(r"^\s*([-+]?\d+(?:\.\d+)?)\s*$", re.DOTALL)
+# Strict answer/evidence lines
+ANSWER_LINE_RE = re.compile(r"(?im)^\s*answer\s*[:=]\s*(.+?)\s*$")
+EVIDENCE_LINE_RE = re.compile(r"(?im)^\s*evidence\s*[:=]\s*(.*)\s*$")
 
-# expected formats like:
-# answer: 1
-# evidence: ...
-ANSWER_RE = re.compile(r"(?im)^\s*answer\s*[:=]\s*([01])\s*$")
-EVIDENCE_RE = re.compile(r"(?im)^\s*evidence\s*[:=]\s*(.*)\s*$")
+# Number parsing (supports 0.14 and 0,14)
+NUMBER_RE = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
 
 def _sanitize_text(s: str) -> str:
-    """Remove control chars that often break tokenization / confuse models."""
     if s is None:
         return ""
-    # Remove NULL bytes and other control chars except \n and \t
     s = s.replace("\x00", "")
     s = re.sub(r"[\x01-\x08\x0B\x0C\x0E-\x1F]", " ", s)
     return s
 
+def _parse_number(text: str) -> Optional[float]:
+    if not text:
+        return None
+    m = NUMBER_RE.search(text)
+    if not m:
+        return None
+    num = m.group(0).replace(",", ".")
+    try:
+        return float(num)
+    except Exception:
+        return None
+
 def format_prompt(prompt_template: str, context: str, N: int) -> str:
-    # Make output formatting stricter -> more reliable parsing
+    """
+    Fix #2: stricter output contract so model doesn't copy '1 or 0' / 'YYYY-MM-DD'.
+    """
     return (
         prompt_template.strip()
         + "\n\n--- CONTEXT START ---\n"
         + _sanitize_text(context).strip()
         + "\n--- CONTEXT END ---\n"
         + f"\nN={N}\n"
-        + "\nIMPORTANT OUTPUT RULES:\n"
-        + "1) First line must be exactly: answer: 0 or answer: 1 (or answer: YYYY-MM-DD / UNKNOWN for date tasks)\n"
-        + "2) Second line must be: evidence: <short quote or none>\n"
-        + "3) Do not add any other lines or text.\n"
+        + "\nOUTPUT RULES (MUST FOLLOW):\n"
+        + "Return EXACTLY two lines and nothing else:\n"
+        + "answer: <value>\n"
+        + "evidence: <short quote or none>\n"
+        + "\nWhere <value> is:\n"
+        + "- for binary: 0 or 1\n"
+        + "- for count: a number (0..N)\n"
+        + "- for date: YYYY-MM-DD or UNKNOWN\n"
     )
 
 @lru_cache(maxsize=4)
 def get_hf_runner(model_name: str):
     """
     Transformers v5 safe: use AutoModel + generate (no pipeline task strings).
-    Returns a callable: runner(prompt, max_new_tokens) -> generated_text
+    Also: use_fast=False to avoid sentencepiece byte-fallback warning.
     """
     import torch
-    from transformers import (
-        AutoTokenizer,
-        AutoModelForSeq2SeqLM,
-        AutoModelForCausalLM,
-    )
+    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForCausalLM
 
-    # ✅ Use slow tokenizer to avoid "byte fallback not implemented" warning
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
 
     kind = "seq2seq"
@@ -78,10 +87,10 @@ def get_hf_runner(model_name: str):
                 **inputs,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
+                num_beams=1,
             )
             text = tokenizer.decode(out_ids[0], skip_special_tokens=True).strip()
 
-            # causal models often echo prompt
             if kind == "causal" and text.startswith(prompt):
                 text = text[len(prompt):].strip()
 
@@ -91,56 +100,63 @@ def get_hf_runner(model_name: str):
 
 def _parse_value_and_confidence(generated_text: str, typ: str) -> Tuple[Optional[float | str], float]:
     """
-    Parse based on expected strict output:
-      answer: ...
-      evidence: ...
+    Returns (value, confidence). If parsing fails => (None, 0.0).
+    IMPORTANT: None means "did not work", 0.0 means "worked and answer was 0".
     """
     txt = _sanitize_text(generated_text).strip()
 
-    # ---- date ----
-    if typ == "date":
-        # look for answer line first
-        # allow "answer: UNKNOWN"
-        m_ans = re.search(r"(?im)^\s*answer\s*[:=]\s*(.+?)\s*$", txt)
-        if m_ans:
-            ans = m_ans.group(1).strip()
-            if ans.upper() == "UNKNOWN":
-                return None, 0.0
-            m_date = DATE_RE.search(ans)
-            if m_date:
-                return m_date.group(1), 0.7
-
-        # fallback: any date in text
-        m = DATE_RE.search(txt)
-        if not m:
-            return None, 0.0
-        return m.group(1), 0.5
-
-    # ---- JSON (optional advanced format) ----
+    # Optional JSON format: {"value":..., "confidence":...}
     jm = JSON_RE.search(txt)
     if jm:
         try:
             obj = json.loads(jm.group(0))
             val = obj.get("value", None)
-            conf = obj.get("confidence", 0.0)
-            confidence = float(conf) if conf is not None else 0.0
+            conf = float(obj.get("confidence", 0.0) or 0.0)
             if val is None:
-                return None, confidence
-            return float(val), confidence
+                return None, conf
+            # date value from JSON
+            if typ == "date":
+                if isinstance(val, str) and val.strip().upper() == "UNKNOWN":
+                    return None, conf
+                m = DATE_RE.search(str(val))
+                return (m.group(1) if m else None), conf
+            return float(val), conf
         except Exception:
             pass
 
-    # ---- strict answer: 0/1 ----
-    am = ANSWER_RE.search(txt)
+    # Strict answer line
+    am = ANSWER_LINE_RE.search(txt)
+    ans = am.group(1).strip() if am else ""
+
+    # Guard against copied placeholders
+    if ans.upper() in ("", "UNKNOWN") and typ == "date":
+        return None, 0.6 if ans.upper() == "UNKNOWN" else 0.0
+
+    if "YYYY-MM-DD" in ans and typ == "date":
+        return None, 0.0
+
+    # Avoid "1 or 0" / "0 or 1" style
+    if re.search(r"\bor\b", ans.lower()) and ("0" in ans and "1" in ans):
+        return None, 0.0
+
+    if typ == "date":
+        m = DATE_RE.search(ans) or DATE_RE.search(txt)
+        if not m:
+            return None, 0.0
+        return m.group(1), 0.7 if am else 0.4
+
+    # numeric types
     if am:
-        return float(am.group(1)), 0.7
+        v = _parse_number(ans)
+        if v is None:
+            return None, 0.0
+        return v, 0.7
 
-    # ---- numeric-only fallback (rare) ----
-    nm = NUM_ONLY_RE.match(txt)
-    if nm:
-        return float(nm.group(1)), 0.5
-
-    return None, 0.0
+    # fallback: numeric-only whole output (rare)
+    v = _parse_number(txt)
+    if v is None:
+        return None, 0.0
+    return v, 0.4
 
 def infer_symbol(
     symbol: str,
@@ -149,6 +165,11 @@ def infer_symbol(
     prompt_defs: Dict[str, Any],
     hf_runner,
 ) -> Tuple[Optional[float | str], str, float]:
+    """
+    Fix #3: retry when parse/confidence fails.
+    Returns (value or None, raw_text, confidence).
+    None means: did not work. 0.0 means: worked and answer was 0.
+    """
     cfg = prompt_defs.get(symbol)
     if cfg is None or hf_runner is None:
         return None, "", 0.0
@@ -156,22 +177,40 @@ def infer_symbol(
     typ = cfg.get("type", "binary")
     prompt = format_prompt(cfg["prompt"], context, N)
 
-    generated_text = hf_runner(prompt, max_new_tokens=64)
+    # 1st attempt
+    raw1 = hf_runner(prompt, max_new_tokens=64)
+    val1, conf1 = _parse_value_and_confidence(raw1, typ)
 
-    parsed_val, conf = _parse_value_and_confidence(generated_text, typ)
+    # Retry if not parsed or too low confidence
+    if val1 is None or conf1 <= 0.0:
+        retry_prompt = (
+            prompt
+            + "\n\nFINAL REMINDER: Output ONLY two lines:\n"
+            + "answer: <value>\n"
+            + "evidence: <quote or none>\n"
+        )
+        raw2 = hf_runner(retry_prompt, max_new_tokens=48)
+        val2, conf2 = _parse_value_and_confidence(raw2, typ)
 
-    # If no parse, return 0 for numeric types
-    if parsed_val is None:
-        if typ in ("binary", "count_0_to_N", "count"):
-            return 0.0, generated_text, 0.0
-        return None, generated_text, 0.0
+        if (val2 is not None and conf2 >= conf1) or (val1 is None and val2 is not None):
+            val1, conf1, raw1 = val2, conf2, raw2
+
+    # Type handling
+    if val1 is None:
+        return None, raw1, conf1
 
     if typ == "binary":
-        v = 1.0 if float(parsed_val) >= 1 else 0.0
-        return v, generated_text, conf
+        # keep 0/1 but accept float inputs
+        v = 1.0 if float(val1) >= 0.5 else 0.0
+        return v, raw1, conf1
 
     if typ in ("count_0_to_N", "count"):
-        v = max(0.0, min(float(N), float(parsed_val)))
-        return v, generated_text, conf
+        v = float(val1)
+        v = max(0.0, min(float(N), v))
+        return v, raw1, conf1
 
-    return float(parsed_val), generated_text, conf
+    # generic numeric / float (supports 0.14 etc)
+    try:
+        return float(val1), raw1, conf1
+    except Exception:
+        return None, raw1, 0.0

@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Optional
 import math
 import re
 import pandas as pd
 
 from core.llm import infer_symbol
 
-# Safe condition eval (used for conditional formulas)
 COND_ALLOWED_RE = re.compile(r"^[0-9a-zA-Z_ .<>=!()+\-*/]+$")
-
-# Extract evidence line from LLM output
 EVIDENCE_LINE_RE = re.compile(r"(?im)^\s*evidence\s*[:=]\s*(.*)\s*$")
 
 def _safe_eval_condition(expr: str, env: Dict[str, float]) -> bool:
@@ -98,6 +95,42 @@ def _build_llm_context(df: pd.DataFrame) -> str:
         parts.append(f"- {col}: dtype={info['dtype']}, missing={info['missing']}, samples={info['samples']}")
     return "\n".join(parts)
 
+# ---------- Fix #4: Auto-first symbol derivation ----------
+def _auto_symbol(sym: str, df: pd.DataFrame, auto_inputs: Dict[str, Any]) -> Tuple[Optional[Any], str]:
+    """
+    Returns (value or None, source_string)
+    source_string: "auto" if computed, "" if not available.
+    """
+    # direct auto_inputs
+    if sym in auto_inputs:
+        return auto_inputs[sym], "auto"
+
+    cols_lower = [str(c).lower() for c in df.columns]
+
+    # sd/edp/max_date already in auto_inputs; dp can be inferred from ModifiedAt if present
+    if sym == "dp":
+        # try ModifiedAt column as "publication/last updated"
+        for c in df.columns:
+            if str(c).lower() in ("modifiedat", "modified_at", "updatedat", "updated_at", "lastmodified", "last_modified"):
+                dt = pd.to_datetime(df[c], errors="coerce", utc=True)
+                if dt.notna().any():
+                    return dt.max().date().isoformat(), "auto"
+        # if we have max_date we can use it as a fallback (still auto)
+        if "max_date" in auto_inputs:
+            return auto_inputs["max_date"], "auto"
+
+    # du (update dates mentioned) -> if there is a modified/updated timestamp column
+    if sym == "du":
+        if any(x in cols_lower for x in ["modifiedat", "modified_at", "updatedat", "updated_at", "lastmodified", "last_modified"]):
+            return 1.0, "auto"
+
+    # id (identifier present) -> common if there's Id/uuid columns
+    if sym == "id":
+        if any(x in cols_lower for x in ["id", "uuid", "identifier"]):
+            return 1.0, "auto"
+
+    return None, ""
+
 def compute_metrics(
     df: pd.DataFrame,
     formulas_cfg: Dict[str, Any],
@@ -118,10 +151,9 @@ def compute_metrics(
     env["N"] = int(df.shape[1])
     env["R"] = int(df.shape[0])
 
-    # ---------- auto inputs ----------
+    # ---------- auto inputs (sd/edp/max_date etc) ----------
     auto_inputs: Dict[str, Any] = {}
 
-    # try infer a date column for sd / edp
     date_col = None
     for c in df.columns:
         if "date" in str(c).lower():
@@ -136,22 +168,26 @@ def compute_metrics(
             auto_inputs["edp"] = dt.max().date().isoformat()
             auto_inputs["max_date"] = dt.max().date().isoformat()
 
+    # Put auto_inputs into env
     for k, v in auto_inputs.items():
         env[k] = v
 
-    # ---------- LLM context ----------
     context = _build_llm_context(df)
 
+    # Debug collections
     llm_raw: Dict[str, str] = {}
     llm_evidence: Dict[str, str] = {}
     llm_conf: Dict[str, float] = {}
 
-    # ---------- gather required symbols ----------
+    symbol_values: Dict[str, Any] = {}
+    symbol_source: Dict[str, str] = {}  # auto / llm / fail
+
+    # ---------- required symbols from YAML ----------
     required_symbols = set()
     for dim, dim_obj in vetro.items():
         if not isinstance(dim_obj, dict):
             continue
-        for metric_key, metric_obj in dim_obj.items():
+        for _, metric_obj in dim_obj.items():
             if not isinstance(metric_obj, dict):
                 continue
             for inp in metric_obj.get("inputs", []) or []:
@@ -163,9 +199,15 @@ def compute_metrics(
     CONF_THRESHOLD = 0.4
 
     for sym in sorted(required_symbols):
-        if sym in env and env[sym] not in (None, ""):
+        # Fix #4: auto-first
+        auto_val, auto_src = _auto_symbol(sym, df, auto_inputs)
+        if auto_src == "auto" and auto_val is not None:
+            env[sym] = auto_val
+            symbol_values[sym] = auto_val
+            symbol_source[sym] = "auto"
             continue
 
+        # If no auto worked, try LLM
         if use_llm and hf_runner is not None and sym in prompts:
             val, raw, conf = infer_symbol(
                 symbol=sym,
@@ -182,13 +224,22 @@ def compute_metrics(
             em = EVIDENCE_LINE_RE.search(raw_str)
             llm_evidence[sym] = (em.group(1).strip() if em else "")
 
-            # confidence gating
-            if conf < CONF_THRESHOLD:
-                env[sym] = 0.0
+            # Fix: "null if not worked" + confidence gating to None
+            if val is None or conf < CONF_THRESHOLD:
+                env[sym] = None
+                symbol_values[sym] = None
+                symbol_source[sym] = "fail"
             else:
-                env[sym] = float(val) if val is not None else 0.0
+                # Keep numeric (can be 0.0 or 0.14 etc)
+                env[sym] = val
+                symbol_values[sym] = val
+                symbol_source[sym] = "llm"
+
         else:
-            env[sym] = 0.0
+            # no llm available => not worked
+            env[sym] = None
+            symbol_values[sym] = None
+            symbol_source[sym] = "fail"
 
     # ---------- compute metrics ----------
     rows = []
@@ -200,13 +251,11 @@ def compute_metrics(
             if not isinstance(metric_obj, dict):
                 continue
 
-            # base formula assign
             f_assign = (metric_obj.get("formula") or {}).get("assign")
             f_expr = (metric_obj.get("formula") or {}).get("expression")
             if f_assign and f_expr:
                 env[f_assign] = _eval_expr(f_expr, env)
 
-            # normalization assign (final score)
             n_assign = (metric_obj.get("normalization") or {}).get("assign")
             n_expr = (metric_obj.get("normalization") or {}).get("expression")
             value = float("nan")
@@ -214,12 +263,11 @@ def compute_metrics(
                 value = _eval_expr(n_expr, env)
                 env[n_assign] = value
 
-            metric_id = f"{dim}.{metric_key}"
             rows.append(
                 {
                     "dimension": dim,
                     "metric": metric_key,
-                    "metric_id": metric_id,
+                    "metric_id": f"{dim}.{metric_key}",
                     "value": value,
                     "description": metric_obj.get("description", ""),
                 }
@@ -229,8 +277,10 @@ def compute_metrics(
 
     details = {
         "auto_inputs": auto_inputs,
+        "symbol_values": symbol_values,
+        "symbol_source": symbol_source,
+        "llm_confidence": llm_conf,
         "llm_raw": llm_raw,
         "llm_evidence": llm_evidence,
-        "llm_confidence": llm_conf,
     }
     return metrics_df, details
