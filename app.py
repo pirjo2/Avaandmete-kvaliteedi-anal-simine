@@ -9,8 +9,8 @@ import streamlit as st
 from core.pipeline import run_quality_assessment
 
 # ---- Paths (repo root) ----
-FORMULAS = "formulas.yaml"
-PROMPTS = "prompts.yaml"
+FORMULAS = "configs/formulas.yaml"
+PROMPTS = "configs/prompts.yaml"
 
 
 def _sha16(b: bytes) -> str:
