@@ -1,29 +1,25 @@
 meta:
   name: "Vetrò symbol prompting pack (heuristic)"
-  version: "2.0"
+  version: "2.1"
   notes:
     - "Heuristic mode: if explicit metadata is missing, infer from column names, sample values and common open-data patterns."
-    - "Output format is strict for parsing: answer 0/1 (or integer/date), plus confidence 0..1."
-    - "Placeholders (optional): {dataset_description}, {columns}, {profile}, {N}."
-    - |
-      Expected outputs:
-      - binary -> answer: 0/1
-      - count_0_to_N -> answer: integer 0..N
-      - date -> answer: YYYY-MM-DD or UNKNOWN
+    - "Strict parsing: answer + confidence + evidence on separate lines."
+    - "Optional placeholders: {dataset_description}, {columns}, {profile}, {file_ext}, {N}."
+    - "Expected outputs: binary -> 0/1; count_0_to_N -> integer 0..N; date -> YYYY-MM-DD or UNKNOWN."
 
 symbols:
   s:
     type: binary
     prompt: |
-      Task: Open data metadata check (Vetrò-style, heuristic).
-      Question: Is the DATA SOURCE stated or reasonably inferable?
-      Explicit source examples: publisher organisation/system name, source system, data owner.
-      Heuristic inference allowed if columns/values clearly imply a source (e.g., official codes, "RIA", "Statistics Estonia", ministry names).
+      Task: Open data metadata check (heuristic).
+      Question: Is the DATA SOURCE stated or reasonably inferable (publisher org/system/source system)?
+      Explicit: publisher organisation/system name or source system.
+      Heuristic: column names/values clearly imply an official source (e.g., Statistics Estonia, ministry/agency names, official codes).
 
       Return EXACTLY 3 lines:
       answer: 1 or 0
-      confidence: number from 0.0 to 1.0
-      evidence: short quote/phrase OR "inferred from <reason>" OR "none"
+      confidence: 0.0 to 1.0
+      evidence: quote OR "inferred from <reason>" OR "none"
       Rules: Do NOT answer Yes/No. No extra text.
 
   dc:
@@ -36,7 +32,7 @@ symbols:
 
       Return EXACTLY 3 lines:
       answer: 1 or 0
-      confidence: number from 0.0 to 1.0
+      confidence: 0.0 to 1.0
       evidence: quote OR inferred-from-column OR none
       Rules: Do NOT answer Yes/No. No extra text.
 
@@ -46,11 +42,11 @@ symbols:
       Task: Metadata check (heuristic).
       Question: Is an update log / version history present or inferable?
       Explicit: changelog, versions list, release notes.
-      Heuristic: presence of columns like Version, Revision, ChangeLog, or multiple dated versions.
+      Heuristic: columns like Version, Revision, ChangeLog, or multiple dated versions.
 
       Return EXACTLY 3 lines:
       answer: 1 or 0
-      confidence: number from 0.0 to 1.0
+      confidence: 0.0 to 1.0
       evidence: quote OR inferred-from-column OR none
       Rules: Do NOT answer Yes/No. No extra text.
 
@@ -60,11 +56,11 @@ symbols:
       Task: Metadata check (heuristic).
       Question: Are update DATES mentioned or inferable?
       Explicit: "last updated", dated versions, update timestamps.
-      Heuristic: presence of columns like ModifiedAt/UpdatedAt/LastModified with timestamps.
+      Heuristic: columns like ModifiedAt/UpdatedAt/LastModified with timestamps.
 
       Return EXACTLY 3 lines:
       answer: 1 or 0
-      confidence: number from 0.0 to 1.0
+      confidence: 0.0 to 1.0
       evidence: quote OR inferred-from-column OR none
       Rules: Do NOT answer Yes/No. No extra text.
 
@@ -74,13 +70,13 @@ symbols:
       Task: Date extraction (heuristic).
       Question: What is the dataset PUBLICATION date or LAST UPDATED date?
       Prefer explicit metadata. If missing, infer from ModifiedAt/UpdatedAt columns (use most recent date).
-      Return ONE date in YYYY-MM-DD.
       If no reasonable date exists, return UNKNOWN.
 
-      Return EXACTLY 2 lines:
+      Return EXACTLY 3 lines:
       answer: YYYY-MM-DD or UNKNOWN
+      confidence: 0.0 to 1.0
       evidence: quote OR inferred-from-column OR none
-      Rules: Do NOT output the literal placeholder "YYYY-MM-DD".
+      Rules: Do NOT output the literal placeholder "YYYY-MM-DD". No extra text.
 
   sd:
     type: date
@@ -88,12 +84,13 @@ symbols:
       Task: Date extraction (heuristic).
       Question: What is the START date of the time period referred by the dataset?
       Prefer explicit metadata. If missing, infer from the earliest date-like column (min date).
-      Return ONE date in YYYY-MM-DD or UNKNOWN.
+      If no reasonable date exists, return UNKNOWN.
 
-      Return EXACTLY 2 lines:
+      Return EXACTLY 3 lines:
       answer: YYYY-MM-DD or UNKNOWN
+      confidence: 0.0 to 1.0
       evidence: quote OR inferred-from-column OR none
-      Rules: Do NOT output the literal placeholder "YYYY-MM-DD".
+      Rules: Do NOT output the literal placeholder "YYYY-MM-DD". No extra text.
 
   edp:
     type: date
@@ -101,25 +98,27 @@ symbols:
       Task: Date extraction (heuristic).
       Question: What is the END date of the time period referred by the dataset?
       Prefer explicit metadata. If missing, infer from the latest date-like column (max date).
-      Return ONE date in YYYY-MM-DD or UNKNOWN.
+      If no reasonable date exists, return UNKNOWN.
 
-      Return EXACTLY 2 lines:
+      Return EXACTLY 3 lines:
       answer: YYYY-MM-DD or UNKNOWN
+      confidence: 0.0 to 1.0
       evidence: quote OR inferred-from-column OR none
-      Rules: Do NOT output the literal placeholder "YYYY-MM-DD".
+      Rules: Do NOT output the literal placeholder "YYYY-MM-DD". No extra text.
 
   ed:
     type: date
     prompt: |
       Task: Date extraction (heuristic).
-      Question: What is the EXPIRATION date of the previous dataset version?
-      If not explicit, you may infer expiration as the end date of the previous period (if clearly implied).
-      Return ONE date in YYYY-MM-DD or UNKNOWN.
+      Question: What is the EXPIRATION date of the previous dataset version (when the previous version became outdated)?
+      If not explicit, you may infer expiration as the end date of the previous period ONLY if clearly implied.
+      Otherwise return UNKNOWN.
 
-      Return EXACTLY 2 lines:
+      Return EXACTLY 3 lines:
       answer: YYYY-MM-DD or UNKNOWN
+      confidence: 0.0 to 1.0
       evidence: quote OR inferred-from-reason OR none
-      Rules: Do NOT output the literal placeholder "YYYY-MM-DD".
+      Rules: Do NOT output the literal placeholder "YYYY-MM-DD". No extra text.
 
   c:
     type: binary
@@ -131,7 +130,7 @@ symbols:
 
       Return EXACTLY 3 lines:
       answer: 1 or 0
-      confidence: number from 0.0 to 1.0
+      confidence: 0.0 to 1.0
       evidence: quote OR inferred-from-topic OR none
       Rules: Do NOT answer Yes/No. No extra text.
 
@@ -141,12 +140,12 @@ symbols:
       Task: eGMS/Dublin Core presence (heuristic).
       Field: Title.
       Question: Is a title present OR inferable as a clear dataset name/topic in the context?
-      Heuristic: if context describes the dataset purpose clearly, treat as inferred title.
+      Heuristic: if context includes a dataset name or file name, treat as inferred title.
 
       Return EXACTLY 3 lines:
       answer: 1 or 0
-      confidence: number from 0.0 to 1.0
-      evidence: quote OR inferred-from-description OR none
+      confidence: 0.0 to 1.0
+      evidence: quote OR inferred-from-name OR none
       Rules: Do NOT answer Yes/No. No extra text.
 
   d:
@@ -154,12 +153,12 @@ symbols:
     prompt: |
       Task: eGMS/Dublin Core presence (heuristic).
       Field: Description.
-      Question: Is a human-readable DESCRIPTION present OR inferable (context explains what data represents)?
-      Heuristic: if column names + profile clearly describe the dataset, treat as inferred.
+      Question: Is a human-readable DESCRIPTION present OR inferable (context explains what the data represents)?
+      Heuristic: if column names + profile clearly describe the dataset topic, treat as inferred.
 
       Return EXACTLY 3 lines:
       answer: 1 or 0
-      confidence: number from 0.0 to 1.0
+      confidence: 0.0 to 1.0
       evidence: quote OR inferred-from-columns OR none
       Rules: Do NOT answer Yes/No. No extra text.
 
@@ -173,7 +172,7 @@ symbols:
 
       Return EXACTLY 3 lines:
       answer: 1 or 0
-      confidence: number from 0.0 to 1.0
+      confidence: 0.0 to 1.0
       evidence: quote OR inferred-from-column OR none
       Rules: Do NOT answer Yes/No. No extra text.
 
@@ -183,11 +182,11 @@ symbols:
       Task: eGMS/Dublin Core presence (heuristic).
       Field: Publisher.
       Question: Is publisher present OR inferable?
-      Heuristic: organisation-like values/columns (e.g., Ministry, Agency, RIA, Statistics Estonia) OR known official codes strongly tied to a publisher.
+      Heuristic: organisation-like values/columns (e.g., Ministry, Agency) or well-known official codes strongly tied to an organisation.
 
       Return EXACTLY 3 lines:
       answer: 1 or 0
-      confidence: number from 0.0 to 1.0
+      confidence: 0.0 to 1.0
       evidence: quote OR inferred-from-organisation OR none
       Rules: Do NOT answer Yes/No. No extra text.
 
@@ -201,7 +200,7 @@ symbols:
 
       Return EXACTLY 3 lines:
       answer: 1 or 0
-      confidence: number from 0.0 to 1.0
+      confidence: 0.0 to 1.0
       evidence: quote OR inferred-from-columns OR none
       Rules: Do NOT answer Yes/No. No extra text.
 
@@ -211,11 +210,11 @@ symbols:
       Task: eGMS/Dublin Core presence (heuristic).
       Field: Language.
       Question: Is language present OR inferable?
-      Heuristic: if all text values appear in a single language (e.g., Estonian place names), infer language with lower confidence.
+      Heuristic: if most text values appear in a single language (e.g., Estonian place names), infer language with lower confidence.
 
       Return EXACTLY 3 lines:
       answer: 1 or 0
-      confidence: number from 0.0 to 1.0
+      confidence: 0.0 to 1.0
       evidence: quote OR inferred-from-values OR none
       Rules: Do NOT answer Yes/No. No extra text.
 
@@ -225,12 +224,12 @@ symbols:
       Task: 5-star open data check (heuristic).
       Criterion (1-star): Open license.
       Explicit: license field/name (CC BY, CC0, etc).
-      Heuristic: if context strongly suggests official open data portal practice but no license mentioned -> allow inference with low confidence.
+      Heuristic: if nothing is provided in context, return 0 (do not guess).
 
       Return EXACTLY 3 lines:
       answer: 1 or 0
-      confidence: number from 0.0 to 1.0
-      evidence: quote OR inferred-from-portal-context OR none
+      confidence: 0.0 to 1.0
+      evidence: quote OR none
       Rules: Do NOT answer Yes/No. No extra text.
 
   s2:
@@ -238,12 +237,11 @@ symbols:
     prompt: |
       Task: 5-star open data check (heuristic).
       Criterion (2-star): Structured & machine-readable.
-      Explicit: machine-readable structured dataset.
       Heuristic: tabular columns + consistent types implies structured data.
 
       Return EXACTLY 3 lines:
       answer: 1 or 0
-      confidence: number from 0.0 to 1.0
+      confidence: 0.0 to 1.0
       evidence: quote OR inferred-from-tabular-structure OR none
       Rules: Do NOT answer Yes/No. No extra text.
 
@@ -252,12 +250,11 @@ symbols:
     prompt: |
       Task: 5-star open data check (heuristic).
       Criterion (3-star): Non-proprietary open format (CSV/JSON/XML).
-      Explicit: CSV/JSON/XML mentioned.
-      Heuristic: if context clearly indicates CSV-like structure and column names, infer with medium confidence.
+      Use file extension in context if available.
 
       Return EXACTLY 3 lines:
       answer: 1 or 0
-      confidence: number from 0.0 to 1.0
+      confidence: 0.0 to 1.0
       evidence: quote OR inferred-from-format OR none
       Rules: Do NOT answer Yes/No. No extra text.
 
@@ -265,14 +262,13 @@ symbols:
     type: binary
     prompt: |
       Task: 5-star open data check (heuristic).
-      Criterion (4-star): Uses URIs/identifiers.
-      Explicit: URIs/permalinks/identifiers mentioned.
-      Heuristic: presence of stable identifier columns (UUID, URI-like strings) -> infer with lower confidence.
+      Criterion (4-star): Uses URIs/identifiers so things can be referenced.
+      Heuristic: stable identifier columns (UUID, URI-like strings, URLs).
 
       Return EXACTLY 3 lines:
       answer: 1 or 0
-      confidence: number from 0.0 to 1.0
-      evidence: quote OR inferred-from-identifier-pattern OR none
+      confidence: 0.0 to 1.0
+      evidence: quote OR inferred-from-pattern OR none
       Rules: Do NOT answer Yes/No. No extra text.
 
   s5:
@@ -280,13 +276,11 @@ symbols:
     prompt: |
       Task: 5-star open data check (heuristic).
       Criterion (5-star): Links to other datasets (Linked Open Data).
-      Explicit: RDF links, external dataset links, linked open data references.
-      Heuristic: if clear URI linking patterns exist, infer with low confidence.
       IMPORTANT: Do NOT output "5". Output answer only as 1 or 0.
 
       Return EXACTLY 3 lines:
       answer: 1 or 0
-      confidence: number from 0.0 to 1.0
+      confidence: 0.0 to 1.0
       evidence: quote OR inferred-from-linking OR none
       Rules: Do NOT answer Yes/No. No extra text.
 
@@ -295,13 +289,13 @@ symbols:
     prompt: |
       Task: Column documentation coverage (heuristic).
       Question: How many columns have explicit per-column metadata/definitions?
-      Heuristic: if column names are self-explanatory, you may count them as partially documented with lower confidence.
+      Heuristic: if column names are self-explanatory, you may count them as partially documented (lower confidence).
 
       Return EXACTLY 3 lines:
       answer: integer from 0 to N
-      confidence: number from 0.0 to 1.0
+      confidence: 0.0 to 1.0
       evidence: short reason (or none)
-      Rules: answer must be an integer only. Do NOT output code.
+      Rules: answer must be an integer only. No extra text.
 
   ncuf:
     type: count_0_to_N
@@ -312,32 +306,32 @@ symbols:
 
       Return EXACTLY 3 lines:
       answer: integer from 0 to N
-      confidence: number from 0.0 to 1.0
+      confidence: 0.0 to 1.0
       evidence: short reason (or none)
-      Rules: answer must be an integer only. Do NOT output code.
+      Rules: answer must be an integer only. No extra text.
 
   ns:
     type: count_0_to_N
     prompt: |
       Task: Standards applicability count (heuristic).
       Definition: ns = number of columns where a recognized standard could apply (ISO dates, ISO country codes, EHAK-like region codes, classifications).
-      Heuristic: if a column looks like a code system (EHAK, ISO), count it as applicable.
+      Heuristic: if a column looks like a code system, count it as applicable.
 
       Return EXACTLY 3 lines:
       answer: integer from 0 to N
-      confidence: number from 0.0 to 1.0
+      confidence: 0.0 to 1.0
       evidence: list 1-3 example columns (or none)
-      Rules: answer must be an integer only. Do NOT output code.
+      Rules: answer must be an integer only. No extra text.
 
   nsc:
     type: count_0_to_N
     prompt: |
       Task: Standardized columns count (heuristic).
       Definition: nsc = number of columns that actually follow the associated standard consistently.
-      Heuristic: if sample values match the expected standard pattern (e.g., date format, numeric codes), count as standardized.
+      Heuristic: if sample values match the expected standard pattern (e.g., ISO date format, numeric codes), count as standardized.
 
       Return EXACTLY 3 lines:
       answer: integer from 0 to N
-      confidence: number from 0.0 to 1.0
+      confidence: 0.0 to 1.0
       evidence: list 1-3 example columns (or none)
-      Rules: answer must be an integer only. Do NOT output code.
+      Rules: answer must be an integer only. No extra text.

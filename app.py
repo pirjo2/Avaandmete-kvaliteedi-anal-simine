@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import io
-from pathlib import Path
+import math
+import os
 from typing import Tuple
 
 import pandas as pd
@@ -10,174 +11,156 @@ import streamlit as st
 
 from core.pipeline import run_quality_assessment
 
-
-# ---- Paths (repo root) ----
-FORMULAS = "configs/formulas.yaml"
-PROMPTS = "configs/prompts.yaml"
-
-DEFAULT_MODELS = [
-    "google/flan-t5-small",
-    "google/flan-t5-base",
-]
+REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+FORMULAS = os.path.join(REPO_ROOT, "configs", "formulas.yaml")
+PROMPTS = os.path.join(REPO_ROOT, "configs", "prompts.yaml")
 
 
-def _read_table(uploaded_file) -> Tuple[pd.DataFrame, str]:
-    """
-    Read CSV/XLSX. Returns (df, ext).
-    Tries a few encodings for CSV to handle Estonian portal downloads.
-    """
+def _read_dataset(uploaded_file) -> Tuple[pd.DataFrame, str, str]:
     name = uploaded_file.name
-    ext = Path(name).suffix.lower().lstrip(".")
+    ext = os.path.splitext(name)[1].lower().lstrip(".")
+    data = uploaded_file.getvalue()
+
+    if ext in ("csv", "txt"):
+        for enc in ("utf-8", "utf-8-sig", "latin-1"):
+            try:
+                return pd.read_csv(io.BytesIO(data), encoding=enc), ext, name
+            except Exception:
+                pass
+        return pd.read_csv(io.BytesIO(data)), ext, name
 
     if ext in ("xlsx", "xls"):
-        df = pd.read_excel(uploaded_file)
-        return df, ext
+        return pd.read_excel(io.BytesIO(data)), ext, name
 
-    raw = uploaded_file.getvalue()
-    sep = ","  # default
-    if raw.count(b"\t") > raw.count(b","):
-        sep = "\t"
+    if ext == "json":
+        return pd.read_json(io.BytesIO(data)), ext, name
 
-    encodings = ["utf-8-sig", "utf-8", "cp1252", "latin1"]
-    last_err = None
-    for enc in encodings:
-        try:
-            df = pd.read_csv(io.BytesIO(raw), encoding=enc, sep=sep)
-            return df, ext
-        except Exception as e:
-            last_err = e
-            continue
-    raise last_err  # type: ignore
+    raise ValueError(f"Unsupported file type: .{ext}")
 
 
-def _nice_metric_order(df: pd.DataFrame) -> pd.DataFrame:
-    dim_order = ["traceability", "currentness", "completeness", "compliance", "understandability", "accuracy"]
-    df = df.copy()
-    df["dimension"] = pd.Categorical(df["dimension"], categories=dim_order, ordered=True)
-    return df.sort_values(["dimension", "metric_id"])
+def _df_for_display(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for col in out.columns:
+        if out[col].dtype == "object":
+            out[col] = out[col].apply(lambda v: "" if v is None or (isinstance(v, float) and math.isnan(v)) else str(v))
+    return out
+
+
+def _nan_to_none(x):
+    if x is None:
+        return None
+    if isinstance(x, float) and math.isnan(x):
+        return None
+    return x
 
 
 st.set_page_config(page_title="Open Data Quality Assessment", layout="wide")
 
-st.title("Open Data Quality Assessment (Vetrò-style + optional AI)")
-st.write(
-    "Upload a dataset file (CSV/XLSX) and compute open data quality metrics. "
-    "The tool combines rule-based checks with optional Hugging Face models."
-)
+st.title("Open Data Quality Assessment (Vetrò methodology)")
+st.caption("Upload a dataset and compute quality metrics. Optional: use an open-source LLM for heuristic symbols.")
 
-uploaded = st.file_uploader("Dataset file", type=["csv", "tsv", "xlsx", "xls"])
+uploaded = st.file_uploader("Upload dataset (CSV / XLSX / JSON)", type=["csv", "txt", "xlsx", "xls", "json"])
 
-colA, colB, colC = st.columns([1.2, 1.0, 1.2], vertical_alignment="top")
+colA, colB = st.columns([2, 1], gap="large")
 
 with colA:
-    max_rows = st.number_input(
-        "Max rows to process (0 = all rows)",
-        min_value=0,
-        value=0,
-        step=10000,
-        help="For very large files, using all rows can be slow on Streamlit Cloud.",
+    dataset_description = st.text_area(
+        "Dataset description (optional, improves metadata-related symbols)",
+        placeholder="Paste portal metadata (title, publisher, license, update frequency, etc.).",
+        height=120,
     )
-with colB:
-    use_llm = st.checkbox(
-        "Use AI for metadata-related checks",
-        value=False,
-        help="AI helps with text/metadata symbols. For best results, paste portal metadata below.",
-    )
-    weight_by_conf = st.checkbox(
-        "Weight AI symbols by confidence",
-        value=False,
-        help="If enabled, AI-derived numeric symbols are multiplied by an estimated confidence (0..1).",
-    )
-with colC:
-    hf_model_name = st.selectbox("Hugging Face model", DEFAULT_MODELS, index=1)
-    hf_custom = st.text_input("Custom model (optional)", value="")
-    if hf_custom.strip():
-        hf_model_name = hf_custom.strip()
 
-dataset_description = st.text_area(
-    "Portal metadata / dataset description (optional but recommended)",
-    height=160,
-    placeholder="Paste the dataset description, license, publisher, update info, etc. (copy from andmed.eesti.ee).",
-)
+with colB:
+    use_llm = st.checkbox("Use LLM for heuristic symbols", value=True)
+    confidence_weighting = st.checkbox("Weight LLM numeric answers by confidence", value=True)
+
+    model_options = [
+        "google/flan-t5-small",
+        "google/flan-t5-base",
+        "google/mt5-small",
+    ]
+    hf_model_name = st.selectbox("HF model", options=model_options, index=1)
+
+    st.caption("First run may be slow if the model needs to download and load.")
 
 run_btn = st.button("Run assessment", type="primary", disabled=(uploaded is None))
 
-# Persist results across reruns (so download button won't “wipe” output)
-if "last_result" not in st.session_state:
-    st.session_state["last_result"] = None
+if "results" not in st.session_state:
+    st.session_state["results"] = None
 
 if run_btn and uploaded is not None:
     try:
-        df, ext = _read_table(uploaded)
+        df, ext, fname = _read_dataset(uploaded)
 
-        if max_rows and max_rows > 0 and len(df) > max_rows:
-            df = df.head(int(max_rows)).copy()
+        _, metrics_df, details = run_quality_assessment(
+            df=df,
+            formulas_yaml_path=FORMULAS,
+            prompts_yaml_path=PROMPTS,
+            use_llm=use_llm,
+            hf_model_name=hf_model_name,
+            dataset_description=dataset_description or "",
+            file_ext=ext,
+            file_name=fname,
+            confidence_weighting=confidence_weighting,
+        )
 
-        with st.spinner("Computing metrics..."):
-            _, metrics_df, details = run_quality_assessment(
-                df=df,
-                formulas_yaml_path=FORMULAS,
-                prompts_yaml_path=PROMPTS,
-                use_llm=use_llm,
-                hf_model_name=hf_model_name,
-                dataset_description=dataset_description,
-                file_name=uploaded.name,
-                file_ext=ext,
-                weight_by_confidence=weight_by_conf,
-            )
-
-        st.session_state["last_result"] = (metrics_df, details, uploaded.name)
-
+        st.session_state["results"] = {
+            "df_head": df.head(25),
+            "metrics_df": metrics_df,
+            "details": details,
+        }
     except Exception as e:
         st.error(f"Failed to run assessment: {e}")
         st.stop()
 
-if st.session_state["last_result"] is not None:
-    metrics_df, details, fname = st.session_state["last_result"]
+res = st.session_state.get("results")
+if res is None:
+    st.info("Upload a dataset and click **Run assessment**.")
+    st.stop()
 
-    st.subheader("Results")
-    st.caption(f"File: {fname}")
+metrics_df: pd.DataFrame = res["metrics_df"]
+details = res["details"]
+symbol_table: pd.DataFrame = details.get("symbol_table", pd.DataFrame())
 
-    metrics_df = _nice_metric_order(metrics_df)
+st.subheader("Computed quality metrics")
 
-    plot_df = metrics_df.dropna(subset=["value"]).copy()
-    if not plot_df.empty:
-        fig = px.bar(
-            plot_df,
-            x="metric_label",
-            y="value",
-            color="dimension",
-            hover_data=["metric_id", "description"],
-            title="Metric scores (0..1 where applicable)",
-        )
-        st.plotly_chart(fig, width="stretch")
-    else:
-        st.info("No metric values were computed (all values are empty). Check symbols/debug below.")
+metrics_show = metrics_df.copy()
+metrics_show["value"] = metrics_show["value"].apply(_nan_to_none)
+st.dataframe(_df_for_display(metrics_show), use_container_width=True, hide_index=True)
 
-    st.dataframe(metrics_df, width="stretch")
+plot_df = metrics_df.copy()
+plot_df = plot_df[pd.to_numeric(plot_df["value"], errors="coerce").notna()].copy()
+plot_df["value"] = pd.to_numeric(plot_df["value"], errors="coerce")
 
-    csv_bytes = metrics_df.to_csv(index=False).encode("utf-8")
+if len(plot_df):
+    fig = px.bar(plot_df, x="metric_id", y="value", hover_data=["dimension", "metric"])
+    fig.update_layout(xaxis_title="Metric", yaxis_title="Value (normalized)")
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.warning("No numeric metrics to plot (many symbols might be missing).")
+
+st.download_button(
+    "Download metrics CSV",
+    data=metrics_df.to_csv(index=False).encode("utf-8"),
+    file_name="metrics.csv",
+    mime="text/csv",
+)
+
+st.subheader("Per-symbol diagnostics (inputs to formulas)")
+
+if not symbol_table.empty:
+    sym_disp = symbol_table.copy()
+    sym_disp["value"] = sym_disp["value"].apply(lambda v: "N/A" if v is None or (isinstance(v, float) and math.isnan(v)) else str(v))
+    st.dataframe(_df_for_display(sym_disp), use_container_width=True, hide_index=True)
+
     st.download_button(
-        "Download metrics (CSV)",
-        data=csv_bytes,
-        file_name="open_data_quality_metrics.csv",
+        "Download symbols CSV",
+        data=sym_disp.to_csv(index=False).encode("utf-8"),
+        file_name="symbols.csv",
         mime="text/csv",
     )
+else:
+    st.info("No symbol diagnostics available.")
 
-    st.subheader("Debug (symbols)")
-    symbols_df = pd.DataFrame(details.get("symbols", []))
-    if not symbols_df.empty:
-        st.dataframe(symbols_df, width="stretch")
-        st.download_button(
-            "Download symbols debug (CSV)",
-            data=symbols_df.to_csv(index=False).encode("utf-8"),
-            file_name="open_data_quality_symbols_debug.csv",
-            mime="text/csv",
-        )
-
-    with st.expander("Auto inputs (derived from data)"):
-        st.json(details.get("auto_inputs", {}))
-
-    if use_llm:
-        with st.expander("LLM raw outputs"):
-            st.json(details.get("llm_raw", {}))
+st.subheader("Dataset preview")
+st.dataframe(_df_for_display(res["df_head"]), use_container_width=True, hide_index=True)
