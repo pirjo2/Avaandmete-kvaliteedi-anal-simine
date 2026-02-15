@@ -10,7 +10,7 @@ import pandas as pd
 
 
 # --- Turvaline tingimusavaldiste eval --- #
-COND_ALLOWED_RE = re.compile(r"^[0-9a-zA-Z_ .<>=!()+\\-*/]+$")
+COND_ALLOWED_RE = re.compile(r"^[0-9a-zA-Z_ .<>=!()+\-*/]+$")
 
 
 def _safe_eval_condition(expr: str, env: Dict[str, Any]) -> bool:
