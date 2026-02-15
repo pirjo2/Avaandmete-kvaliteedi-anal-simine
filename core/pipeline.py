@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Optional
 
+import yaml
 import pandas as pd
 
-from core.metrics_eval import compute_metrics
-from core.yaml_loader import load_vetro_yaml, load_prompts_yaml
 from core.llm import get_hf_runner
+from core.metrics_eval import compute_metrics
 
 
 def run_quality_assessment(
@@ -15,36 +15,31 @@ def run_quality_assessment(
     prompts_yaml_path: str,
     use_llm: bool,
     hf_model_name: str,
-    dataset_description: str = "",
-    file_name: str | None = None,
-    file_ext: str | None = None,
-) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+    file_ext: Optional[str] = None,
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
-    High-level orchestration:
-      1) load Vetrò formulas + symbol prompts
-      2) optionally initialise a local HF model
-      3) compute metrics & diagnostics
+    High-level helper: load YAML configs, initialise the HF model (if enabled),
+    and call compute_metrics.
+    """
+    with open(formulas_yaml_path, "r", encoding="utf-8") as f:
+        formulas_cfg = yaml.safe_load(f)
 
-    Returns:
-      (df_input, metrics_df, details_dict)
-    """
-    vetro_cfg, _ = load_vetro_yaml(formulas_yaml_path)
-    prompts_cfg, _ = load_prompts_yaml(prompts_yaml_path)
+    with open(prompts_yaml_path, "r", encoding="utf-8") as f:
+        prompts_cfg = yaml.safe_load(f)
+
+    prompt_defs: Dict[str, Any] = prompts_cfg.get("symbols", {})
 
     hf_runner = None
     if use_llm:
-        hf_model_name = (hf_model_name or "").strip() or "google/flan-t5-base"
         hf_runner = get_hf_runner(hf_model_name)
 
     metrics_df, details = compute_metrics(
         df=df,
-        vetro_cfg=vetro_cfg,
-        prompts_cfg=prompts_cfg,
+        formulas_cfg=formulas_cfg,
+        prompt_defs=prompt_defs,
         use_llm=use_llm,
         hf_runner=hf_runner,
-        dataset_description=dataset_description,
-        file_name=file_name,
         file_ext=file_ext,
     )
 
-    return df, metrics_df, details
+    return metrics_df, details

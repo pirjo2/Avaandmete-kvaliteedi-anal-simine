@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Callable
+
 import json
 import re
 
-# --- Regexes for parsing model output ---
+# --- Regexid vastuse parsimiseks ---
 DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 JSON_OBJ_RE = re.compile(r"\{.*\}", re.DOTALL)
 ANSWER_LINE_RE = re.compile(r"(?im)^\s*answer\s*[:=]\s*(.+?)\s*$")
@@ -17,48 +18,37 @@ NO_RE = re.compile(r"\b(no|false)\b", re.IGNORECASE)
 
 
 def _safe_format(template: str, values: Dict[str, Any]) -> str:
-    """
-    Format a template with placeholders like {dataset_description}.
-    Missing keys are replaced by empty strings instead of raising.
-    """
+    """Format a prompt template safely, leaving unknown {keys} untouched."""
     class _Safe(dict):
         def __missing__(self, key):
-            return ""
+            return "{" + key + "}"
 
     try:
-        return template.format_map(_Safe(values))
+        return template.format_map(_Safe(values or {}))
     except Exception:
         return template
 
 
 def format_prompt(prompt_template: str, context: str, values: Dict[str, Any]) -> str:
-    """
-    Render the user-defined prompt template and attach the tabular context.
-    """
     rendered = _safe_format(prompt_template.strip(), values)
     return (
         rendered
         + "\n\n--- CONTEXT START ---\n"
         + context.strip()
         + "\n--- CONTEXT END ---\n"
-        + "\nReturn ONLY the answer in the requested format.\n"
+        + "\nReturn ONLY in the exact format described (answer/confidence/evidence lines).\n"
     )
 
 
 @lru_cache(maxsize=4)
-def get_hf_runner(model_name: str):
+def get_hf_runner(model_name: str) -> Callable[[str, int], str]:
     """
-    Transformers v5-safe runner: we avoid task strings and use generate() directly.
-
-    Returns a callable:
-        runner(prompt: str, max_new_tokens: int = 96) -> str
+    Transformers v5-safe runner:
+    - uses AutoTokenizer + AutoModelForSeq2SeqLM / AutoModelForCausalLM
+    - no high-level pipeline strings
     """
     import torch
-    from transformers import (
-        AutoTokenizer,
-        AutoModelForSeq2SeqLM,
-        AutoModelForCausalLM,
-    )
+    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForCausalLM
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -69,24 +59,26 @@ def get_hf_runner(model_name: str):
         kind = "causal"
         model = AutoModelForCausalLM.from_pretrained(model_name)
 
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
     model.eval()
 
-    def runner(prompt: str, max_new_tokens: int = 96) -> str:
+    def runner(prompt: str, max_new_tokens: int = 128) -> str:
         with torch.no_grad():
             inputs = tokenizer(
                 prompt,
                 return_tensors="pt",
                 truncation=True,
-                max_length=512,
+                max_length=1024,
             )
+            inputs = {k: v.to(device) for k, v in inputs.items()}
             out_ids = model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
+                num_beams=1,
             )
             text = tokenizer.decode(out_ids[0], skip_special_tokens=True).strip()
-
-            # Causal models often echo the prompt; strip it if needed.
             if kind == "causal" and text.startswith(prompt):
                 text = text[len(prompt):].strip()
             return text
@@ -94,32 +86,22 @@ def get_hf_runner(model_name: str):
     return runner
 
 
-# ------------ Parsers for different symbol types ------------
+# --- Abi-parsers Variant B jaoks ---
 
 
 def _parse_binary(text: str) -> Tuple[Optional[float], float]:
-    """
-    Parse a binary answer 0/1 from the model output.
-    Returns (value_or_None, confidence 0..1).
-    """
-    # Prefer explicit "answer:" line
     m = ANSWER_LINE_RE.search(text)
     if m:
         ans = m.group(1).strip()
         nm = NUM_RE.search(ans)
         if nm:
-            try:
-                v = float(nm.group(0))
-                return (1.0 if v >= 1 else 0.0), 0.7
-            except Exception:
-                return None, 0.0
+            return (1.0 if float(nm.group(0)) >= 1.0 else 0.0), 0.8
         if YES_RE.search(ans):
             return 1.0, 0.6
         if NO_RE.search(ans):
             return 0.0, 0.6
         return None, 0.0
 
-    # Fallback: look for yes/no in whole text
     if YES_RE.search(text) and not NO_RE.search(text):
         return 1.0, 0.5
     if NO_RE.search(text) and not YES_RE.search(text):
@@ -127,51 +109,36 @@ def _parse_binary(text: str) -> Tuple[Optional[float], float]:
 
     nm = NUM_RE.search(text)
     if nm:
-        try:
-            v = float(nm.group(0))
-            return (1.0 if v >= 1 else 0.0), 0.5
-        except Exception:
-            return None, 0.0
+        return (1.0 if float(nm.group(0)) >= 1.0 else 0.0), 0.5
 
     return None, 0.0
 
 
 def _parse_count(text: str) -> Tuple[Optional[float], float]:
-    """
-    Parse a non-negative count from the model output.
-    """
     m = ANSWER_LINE_RE.search(text)
     if m:
         ans = m.group(1).strip()
         nm = NUM_RE.search(ans)
         if nm:
-            try:
-                return float(nm.group(0)), 0.7
-            except Exception:
-                return None, 0.0
+            return float(nm.group(0)), 0.8
+        return None, 0.0
 
     nm = NUM_RE.search(text)
     if nm:
-        try:
-            return float(nm.group(0)), 0.5
-        except Exception:
-            return None, 0.0
+        return float(nm.group(0)), 0.5
 
     return None, 0.0
 
 
 def _parse_date(text: str) -> Tuple[Optional[str], float]:
-    """
-    Parse a date in YYYY-MM-DD or UNKNOWN from the model output.
-    """
     m = ANSWER_LINE_RE.search(text)
     if m:
         ans = m.group(1).strip()
         if ans.upper() == "UNKNOWN":
-            return None, 0.7
+            return None, 0.8
         dm = DATE_RE.search(ans)
         if dm:
-            return dm.group(1), 0.7
+            return dm.group(1), 0.8
 
     dm = DATE_RE.search(text)
     if dm:
@@ -183,11 +150,7 @@ def _parse_date(text: str) -> Tuple[Optional[str], float]:
     return None, 0.0
 
 
-def _parse_json_block(text: str) -> Tuple[Optional[Any], Optional[float], Optional[str]]:
-    """
-    Try to parse a JSON object from the output, e.g.
-      {"answer": 1, "confidence": 0.8, "evidence": "..."}
-    """
+def _parse_json(text: str) -> Tuple[Optional[Any], Optional[float], Optional[str]]:
     jm = JSON_OBJ_RE.search(text)
     if not jm:
         return None, None, None
@@ -214,66 +177,49 @@ def infer_symbol(
     context: str,
     N: int,
     prompt_defs: Dict[str, Any],
-    hf_runner,
-    extra_values: Dict[str, Any],
+    hf_runner: Callable[[str, int], str] | None,
+    extra_values: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[float | str], str, float, str]:
     """
-    Run the LLM for one symbol.
-
-    Returns:
-        value_or_none:
-            - float in [0,1] for binary
-            - float for count
-            - string "YYYY-MM-DD" for date
-        raw_text: full raw model output
-        confidence: 0..1 (heuristic)
-        evidence: extracted evidence string (may be "")
+    LLM-põhine sümboli inferents (Variant B).
+    Tagastab: (value_or_none, raw_text, confidence_0_1, evidence)
     """
     cfg = prompt_defs.get(symbol)
     if cfg is None or hf_runner is None:
         return None, "", 0.0, ""
 
-    typ = str(cfg.get("type", "binary"))
+    typ = cfg.get("type", "binary")
+    prompt_template = str(cfg.get("prompt", ""))
 
-    prompt = format_prompt(
-        prompt_template=str(cfg.get("prompt", "")),
-        context=context,
-        values={**extra_values, "N": N},
-    )
+    values: Dict[str, Any] = {"N": N}
+    if extra_values:
+        values.update(extra_values)
 
-    raw = hf_runner(prompt, max_new_tokens=96)
+    full_prompt = format_prompt(prompt_template, context, values)
+    raw = hf_runner(full_prompt, max_new_tokens=96)
     raw_str = str(raw or "").strip()
 
-    # Evidence (best effort)
+    # Evidence line
     em = EVID_LINE_RE.search(raw_str)
-    evidence = em.group(1).strip() if em else ""
+    evidence = (em.group(1).strip() if em else "")
 
-    # Try JSON block
-    j_ans, j_conf, j_evid = _parse_json_block(raw_str)
+    # JSON fallback
+    j_ans, j_conf, j_evid = _parse_json(raw_str)
     if j_evid and not evidence:
         evidence = j_evid
 
+    # Confidence line
     cm = CONF_LINE_RE.search(raw_str)
-    conf = None
-    if cm:
-        try:
-            conf = float(cm.group(1))
-        except Exception:
-            conf = None
-    if conf is None:
-        conf = j_conf
+    conf = float(cm.group(1)) if cm else (j_conf if j_conf is not None else None)
 
-    # --- Date type ---
     if typ == "date":
         val, base_conf = _parse_date(raw_str)
         if val is None and isinstance(j_ans, str):
             dm = DATE_RE.search(j_ans)
-            if dm:
-                val = dm.group(1)
+            val = dm.group(1) if dm else None
         final_conf = float(conf) if conf is not None else base_conf
         return val, raw_str, max(0.0, min(1.0, final_conf)), evidence
 
-    # --- Count type ---
     if typ in ("count_0_to_N", "count"):
         val, base_conf = _parse_count(raw_str)
         if val is None and j_ans is not None:
@@ -283,17 +229,14 @@ def infer_symbol(
                 val = None
         if val is None:
             return None, raw_str, 0.0, evidence
-        # Clamp to [0, N] if applicable
-        val = max(0.0, min(float(N), float(val)))
         final_conf = float(conf) if conf is not None else base_conf
         return float(val), raw_str, max(0.0, min(1.0, final_conf)), evidence
 
-    # --- Binary (default) ---
+    # binary
     val, base_conf = _parse_binary(raw_str)
     if val is None and j_ans is not None:
         try:
-            v = float(j_ans)
-            val = 1.0 if v >= 1 else 0.0
+            val = 1.0 if float(j_ans) >= 1.0 else 0.0
         except Exception:
             if isinstance(j_ans, str) and YES_RE.search(j_ans):
                 val = 1.0
